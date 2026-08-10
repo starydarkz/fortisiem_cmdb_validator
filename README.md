@@ -18,7 +18,7 @@ En FortiSIEM es común que un dispositivo esté "aprobado" en la CMDB pero, por 
 ## Características principales
 
 - **Cobertura de logs**: porcentaje de equipos que sí están enviando eventos vs. los que no.
-- **Detalle por dispositivo**: IP, hostname, estado de aprobación en la CMDB, tipo de dispositivo, y si envía o no logs.
+- **Detalle por dispositivo**: IP, hostname, estado de aprobación en la CMDB, tipo de dispositivo, validacion de envio de logs y detalles sobre que tipo de logs se reciben.
 - **Clasificación automática de eventos**: identifica más de 100 tipos de integración (Windows, Linux, Fortinet, Cisco, Palo Alto, AWS, Azure, EDRs, bases de datos, etc.) y el protocolo usado.
 - **Dos modos de validación**:
   - **Toda la CMDB** (`-xall`): analiza todos los equipos registrados en FortiSIEM.
@@ -47,6 +47,8 @@ No requiere instalar nada en FortiSIEM ni cambiar configuración del SIEM: usa l
   - `httplib2` — consultas de eventos a FortiSIEM.
   - `tqdm` — barra de progreso en consola.
 
+Nota: La ultima version testeada fue en la version de fortisiem v7.4.2, a partir de esta version en adelante la API funciona diferente y actualmente no es compatible.
+
 ---
 
 ## Instalación
@@ -61,7 +63,7 @@ cd Fortisiem_CMDB_Validator
 pip3 install -r requirements.txt
 ```
 
-Listo, ya puedes ejecutar el programa con `python3 fsmcmdbval.py`.
+Listo, ya puedes ejecutar el programa con `python3 fsmcmdbval.py -h` para ver opciones.
 
 ### Opción B — Instalación con Docker
 
@@ -128,7 +130,7 @@ python3 fsmcmdbval.py [opciones]
 
 > Debes usar **una** de las dos opciones de análisis: `-xall` (todo el inventario) o `-i` (una lista puntual de IPs). Si no se indica ninguna, el programa se detiene con un mensaje de error.
 
-### Ejemplos
+### Ejemplos de uso
 
 **1. Analizar toda la CMDB, últimas 24 horas:**
 
@@ -168,223 +170,19 @@ El archivo generado tiene 3 hojas:
 
 ---
 
-## Automatización: generar el reporte cada cierto tiempo
-
-El programa **no** tiene un modo "demonio" (no se queda corriendo en segundo plano); cada ejecución genera un reporte y termina. Para generarlo periódicamente (por ejemplo, todos los días a las 7am), la forma recomendada en Linux es usar **systemd timers** (más moderno y con mejor logging que cron), aunque `cron` también funciona perfectamente si ya lo usas.
-
-### Opción 1 — systemd timer (recomendado)
-
-**1. Crea un script wrapper** `/opt/fsm-validator/run_report.sh`:
-
-```bash
-#!/bin/bash
-set -euo pipefail
-
-# Carga credenciales desde un archivo separado, protegido con permisos 600
-# (evita dejar la contraseña directamente en el .service, visible para cualquiera con acceso de lectura al systemd)
-source /opt/fsm-validator/credentials.env
-
-cd /opt/fsm-validator
-python3 fsmcmdbval.py -u "$FSM_USER" -p "$FSM_PASS" -s "$FSM_SIEM" \
-  -t 24 -o "/opt/fsm-validator/reports/reporte_$(date +%Y%m%d_%H%M).xlsx" -xall
-```
-
-```bash
-chmod +x /opt/fsm-validator/run_report.sh
-```
-
-**2. Crea el archivo de credenciales** `/opt/fsm-validator/credentials.env` (y restringe sus permisos):
-
-```bash
-FSM_USER="super/usuario"
-FSM_PASS="MiPassword"
-FSM_SIEM="192.168.1.10"
-```
-
-```bash
-chmod 600 /opt/fsm-validator/credentials.env
-```
-
-**3. Crea el servicio** `/etc/systemd/system/fsm-report.service`:
-
-```ini
-[Unit]
-Description=Generar reporte FortiSIEM CMDB Validator
-
-[Service]
-Type=oneshot
-ExecStart=/opt/fsm-validator/run_report.sh
-User=fsmvalidator
-```
-
-**4. Crea el timer** `/etc/systemd/system/fsm-report.timer`:
-
-```ini
-[Unit]
-Description=Ejecutar reporte FortiSIEM CMDB Validator diariamente
-
-[Timer]
-# Todos los días a las 07:00
-OnCalendar=*-*-* 07:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-**5. Activa el timer:**
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now fsm-report.timer
-```
-
-Verificar próximas ejecuciones:
-
-```bash
-systemctl list-timers fsm-report.timer
-```
-
-Ver logs de la última ejecución:
-
-```bash
-journalctl -u fsm-report.service -n 50
-```
-
-### Opción 2 — cron (alternativa simple)
-
-Si prefieres algo más tradicional:
-
-```bash
-crontab -e
-```
-
-```cron
-0 7 * * * /opt/fsm-validator/run_report.sh >> /opt/fsm-validator/cron.log 2>&1
-```
-
-### Opción 3 — Docker + programador de tareas para contenedores
-
-Si estás corriendo la herramienta en Docker, no necesitas instalar cron/systemd dentro del contenedor. Puedes usar **[Ofelia](https://github.com/mcuadros/ofelia)**, un scheduler ligero pensado específicamente para lanzar contenedores Docker en un horario, sin tocar el código de tu programa:
-
-```yaml
-# docker-compose.yml
-services:
-  ofelia:
-    image: mcuadros/ofelia:latest
-    command: daemon --docker
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on:
-      - fsm-validator
-
-  fsm-validator:
-    image: fortisiem-cmdb-validator
-    volumes:
-      - ./reports:/app/output
-    env_file: .env
-    entrypoint: ["sleep", "infinity"]  # se mantiene disponible para que Ofelia lo invoque
-    labels:
-      ofelia.enabled: "true"
-      ofelia.job-exec.reporte-diario.schedule: "0 0 7 * * *"
-      ofelia.job-exec.reporte-diario.command: >
-        python3 fsmcmdbval.py -u ${FSM_USER} -p ${FSM_PASS} -s ${FSM_SIEM}
-        -t 24 -o /app/output/reporte.xlsx -xall
-```
-
-```bash
-docker compose up -d
-```
-
----
-
-## Envío automático por correo electrónico
-
-El programa en sí **no envía correos** — y está bien que sea así, mantiene la herramienta simple. Para enviarlo automáticamente, la forma más sencilla en Linux es combinarlo con dos utilidades pequeñas y muy fáciles de conseguir (están en los repositorios estándar de casi cualquier distro):
-
-- **`msmtp`** — cliente SMTP liviano, se configura con las credenciales de tu servidor de correo (Gmail, Office 365, un relay interno, etc.) en un archivo de texto.
-- **`mutt`** (o `s-nail`) — permite componer un correo con adjunto desde la línea de comandos.
-
-### 1. Instalar
-
-```bash
-sudo apt install msmtp msmtp-mta mutt   # Debian/Ubuntu
-```
-
-### 2. Configurar `msmtp`
-
-Crea `~/.msmtprc`:
-
-```ini
-defaults
-auth           on
-tls            on
-tls_trust_file /etc/ssl/certs/ca-certificates.crt
-
-account        soc
-host           smtp.tu-dominio.com
-port           587
-from           soc-reports@tu-dominio.com
-user           soc-reports@tu-dominio.com
-password       TuPasswordDeAplicacion
-
-account default : soc
-```
-
-```bash
-chmod 600 ~/.msmtprc
-```
-
-> Si usas Gmail u Office 365, generalmente necesitarás una "contraseña de aplicación" en vez de tu contraseña normal, por las políticas de seguridad de esos proveedores.
-
-### 3. Enviar el reporte con adjunto
-
-```bash
-echo "Adjunto el reporte de cobertura CMDB de FortiSIEM." | \
-  mutt -s "Reporte FortiSIEM CMDB - $(date +%Y-%m-%d)" \
-       -a "/opt/fsm-validator/reports/reporte.xlsx" -- destinatario@tu-dominio.com
-```
-
-### 4. Integrarlo en el script wrapper
-
-Amplía el `run_report.sh` de la sección anterior para que, después de generar el Excel, lo envíe:
-
-```bash
-#!/bin/bash
-set -euo pipefail
-
-source /opt/fsm-validator/credentials.env
-
-cd /opt/fsm-validator
-REPORT="/opt/fsm-validator/reports/reporte_$(date +%Y%m%d_%H%M).xlsx"
-
-python3 fsmcmdbval.py -u "$FSM_USER" -p "$FSM_PASS" -s "$FSM_SIEM" \
-  -t 24 -o "$REPORT" -xall
-
-echo "Reporte de cobertura CMDB de FortiSIEM generado el $(date)." | \
-  mutt -s "Reporte FortiSIEM CMDB - $(date +%Y-%m-%d)" \
-       -a "$REPORT" -- destinatario@tu-dominio.com
-```
-
-Con esto, el timer/cron de la sección anterior genera **y envía** el reporte automáticamente, sin tocar una línea del código Python.
-
----
-
-## Ejecución a demanda
-
-El programa siempre puede ejecutarse manualmente cuando lo necesites, sin depender de ningún programador de tareas — simplemente corre el comando descrito en la sección **Uso** (o el equivalente en Docker) cuando quieras un reporte puntual.
-
----
-
 ## Notas de seguridad
 
 - La contraseña se pasa como argumento de línea de comandos (`-p`). Esto significa que, mientras el proceso corre, puede ser visible para otros usuarios del mismo servidor (por ejemplo con `ps aux`). Se recomienda:
   - Usar una cuenta de FortiSIEM dedicada, de solo lectura, exclusiva para esta herramienta.
-  - Evitar escribir la contraseña directamente en la terminal o en scripts con permisos abiertos; usa un archivo `credentials.env` con permisos `600` como se muestra arriba.
-  - Restringir el usuario del sistema (`User=`) que ejecuta el servicio systemd, y no correrlo como `root`.
+  - Evitar escribir la contraseña directamente en la terminal, en cambio optar por un archivo .env, crear variables de entorno temporales o hacer referencia desde algun otro archivo.
 - La conexión hacia FortiSIEM se realiza sin validar el certificado SSL (`ssl._create_unverified_context`), algo común cuando el Supervisor usa un certificado autofirmado. Si tu entorno tiene un certificado válido, ten en cuenta que esta verificación está deshabilitada en el código actual.
 
 ---
+
+## Bugs Conocidos
+
+- Es posible que algunos equipos salgan como "Sin Logs" a pesar de que si se esten enviando eventos al FortiSIEM, este caso unicamente se ha visto cuando los unicos eventos que envia dicho equipo no estan siendo parseados correctamente y se les asigna el evento Unknow Event Type y no siempre sucede, parece un bug del propio fortisiem, por el momento esta en investigacion, asi que si un equipo sale como "Sin Logs", 100% no esta enviando logs o los eventos no se estan procesando correctamente.
+
 
 ## Licencia
 

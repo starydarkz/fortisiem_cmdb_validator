@@ -127,7 +127,7 @@ def _normalize(ip, val):
 def _fmt(value):
     if isinstance(value, list):
         # Retornar con saltos de línea para mejor visualización en Excel
-        return "\n".join(value) if value else "Sin tipo"
+        return "\n".join(value) if value else "Desconocido"
     return str(value)
 
 
@@ -483,7 +483,6 @@ def get_queryfromsiem(ip_siem, user, password, input_time,ip_device):
         resp, content = h.request(urlSecond)
         try: 
             progreso = extrat_data_status(content)
-            #print (progreso)
             if progreso == 100:
                 break
         except:
@@ -497,7 +496,6 @@ def get_queryfromsiem(ip_siem, user, password, input_time,ip_device):
     urlFinal = url + 'events/' + queryId + '/0/1000'
     resp, content = h.request(urlFinal)
     
-    #print (resp, "\\n\\n", content)
 
     if content != '':
         outXML.append(content.decode("utf-8"))
@@ -524,11 +522,6 @@ def get_queryfromsiem(ip_siem, user, password, input_time,ip_device):
         return {ip_device: {"events": False, "event_types": "No logs", "event_protocol": "No logs"}}
     
     data = dumpXML(outXML)
-    
-    if not data:
-        # Si dumpXML retorna lista vacia
-        return {ip_device: {"events": False, "event_types": "No logs", "event_protocol": "No logs"}}
-
     result= detect_eventtypes(data,ip_device)
     return result
 
@@ -539,7 +532,7 @@ EVENT_TYPE_PATTERNS = {
     "win-security"        : "Windows Security Events",
     "win-sysmon"          : "Windows Sysmon Events",
     "win-system"          : "Windows System Events",
-    "win-app"              : "Windows Application Events Events",
+    "win-app"              : "Windows Application Events",
     "win-powershell"      : "Windows PowerShell Events",
     "win-wmi"             : "Windows WMI Activity Events",
     "win-dns"             : "Windows DNS Server Events",
@@ -575,14 +568,20 @@ EVENT_TYPE_PATTERNS = {
     "fortigate-wireless"   : "FortiGate Wireless Events",
     "fortigate-generic"    : "FortiGate Generic Events",
     "fortigate-event-dns"  : "FortiGate DNS Events",
+    "fortigate-dns"  : "FortiGate DNS Events",
     "fortigate-event-admin"  : "FortiGate Administrative Events",
     "fortigate-auth"       : "FortiGate Authentication Events",
     "fortigate-ha"         : "FortiGate High Availability Events",
+    "fortigate-av" : "FortiGate AV Events",
+    "fortigate-sandbox" : "FortiGate Sandbox Events",
+    "fortigate-event-wireless" : "FortiGate Wireless Events",
+    "fortigate-" :  "FortiGate Events",
+
     "faz"                 : "FortiAnalyzer Events",
     "fmg"                 : "FortiManager Events",
     "fortiedr"            : "FortiEDR Events",
     "forticlient"         : "FortiClient Endpoint Events",
-    "fortimail"           : "FortiMail Events Events",
+    "fortimail"           : "FortiMail Events",
     "fortiweb"            : "FortiWeb WAF Events",
     "fortisandbox"        : "FortiSandbox Events",
     "fortiauth"           : "FortiAuthenticator Events",
@@ -590,7 +589,7 @@ EVENT_TYPE_PATTERNS = {
     "fortirecon-easm-"    : "FortiRecon ESASM Events",
     "fortiwifi"           : "FortiWiFi / FortiAP Events",
     "fortideceptor-scada-alert"  : "FortiDeceptor Scada Events Alerts",
-
+    "fortiinsight"        : " FortiINSIGHT Events",
     # ── Palo Alto ─────────────────────────────────────────
     "pan-os-traffic"       : "Palo Alto Firewall Traffic Events",
     "pan-os-threat"        : "Palo Alto Threat Events",
@@ -612,6 +611,7 @@ EVENT_TYPE_PATTERNS = {
     "cisco-amp"           : "Cisco AMP / Secure Endpoint Events",
     "cisco-vpn"           : "Cisco AnyConnect VPN Events",
     "cisco-wlc"           : "Cisco Wireless Controller Events",
+    "ios-"                : "Cisco Events",
 
     # ── Microsoft Cloud / Active Directory ───────────────
     "msad"                : "Microsoft Active Directory Events",
@@ -643,9 +643,9 @@ EVENT_TYPE_PATTERNS = {
     "sflow"               : "sFlow Traffic Events",
     "ipfix"               : "IPFIX Flow Events",
     "snmp"                : "SNMP Trap Events",
-    "bgp"                 : "BGP Routing Events Events",
-    "ospf"                : "OSPF Routing Events Events",
-    "dhcp"                : "DHCP Events Events",
+    "bgp"                 : "BGP Routing Events",
+    "ospf"                : "OSPF Routing Events",
+    "dhcp"                : "DHCP Events",
     "dns"                 : "DNS Query/Response",
     "ntp"                 : "NTP Events",
 
@@ -708,9 +708,11 @@ EVENT_TYPE_PATTERNS = {
 
     # ── Cloud Events ─────────────────────────────────────────
     "cloudflare_"          : "Cloudflare Events",
+    "cloudflare-waf"          : "Cloudflare WAF Events",
 
     # ── FortiSIEM Events ─────────────────────────────────────────
-    "PH_D" : "FortiSIEM Performance Events"
+    "PH_D" : "FortiSIEM Performance Events",
+    "unknown_eventtype" : "Unknown Event Type (Parsing Errors)"
 
 }
 
@@ -723,7 +725,7 @@ def get_category(event_type: str) -> str | None:
     event_lower = event_type.lower()
     for pattern in PATTERNS:
         if event_lower.startswith(pattern):
-            return EVENT_TYPE_PATTERNS[pattern]
+            return EVENT_TYPE_PATTERNS[pattern]        
     return None
 
 def classify_device_events(event_types: list) -> list:
@@ -740,7 +742,6 @@ def classify_device_events(event_types: list) -> list:
 
 def detect_eventtypes(data,ip_device):
 
-    filter_detected = []
     protocol_detected = []
 
     if len(data) == 0:  #Sin eventos    
@@ -749,15 +750,11 @@ def detect_eventtypes(data,ip_device):
 
         event_types = []
         for element in data:
-            
-            if element["eventType"] == "Unknown_EventType":
-                filter_detected.append("Desconocido")
-                protocol_detected.append("Desconocido")
-            else:
-                event_types.append(element["eventType"].lower())
 
-                if element["extEventRecvProto"] not in protocol_detected:
-                    protocol_detected.append(element["extEventRecvProto"])
+            event_types.append(element["eventType"].lower())
+
+            if element["eventType"] !="Unknown_EventType" and element["extEventRecvProto"] not in protocol_detected:
+                protocol_detected.append(element["extEventRecvProto"])
 
         categories = classify_device_events(event_types)
         return {ip_device:{"events":True, "event_types":categories, "event_protocol":protocol_detected}}
